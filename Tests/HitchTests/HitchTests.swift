@@ -14,12 +14,15 @@
 import Foundation
 import HitchRecording
 import Testing
+import os
 
 @testable import Hitch
 
 private let environment = Environment(
-  device: .init(
-    model: "iPhone17,1", systemName: "iOS", systemVersion: "18.2.0", maximumFramesPerSecond: 120),
+  device: {
+    .init(
+      model: "iPhone17,1", systemName: "iOS", systemVersion: "18.2.0", maximumFramesPerSecond: 120)
+  },
   app: .init(
     bundleIdentifier: "com.example.app", version: "1.0", build: "1", configuration: .debug),
   secondsSinceLaunch: 0.4,
@@ -125,6 +128,40 @@ private func onlyRecording(in directory: URL) throws -> Recording {
     let recording = try onlyRecording(in: directory)
     #expect(recording.unfinishedIntervals == ["image.final": 3])
     #expect(recording.series.first { $0.name == "image.final" }?.values == [120, 140])
+  }
+
+  /// A recording that starts at launch begins before the battery state and the display are
+  /// known. On a device the report then said the conditions had changed during the run, and
+  /// left the refresh rate out.
+  @Test func whatIsUnknownAtLaunchIsFilledInLater() throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let known = OSAllocatedUnfairLock(initialState: false)
+    let launching = Environment(
+      device: {
+        .init(
+          model: "iPhone17,1", systemName: "iOS", systemVersion: "18.2.0",
+          maximumFramesPerSecond: known.withLock { $0 } ? 120 : nil)
+      },
+      app: .init(
+        bundleIdentifier: "com.example.app", version: "1.0", build: "1", configuration: .debug),
+      secondsSinceLaunch: 0.1,
+      conditions: {
+        .init(
+          thermalState: .nominal, isLowPowerModeEnabled: false,
+          batteryState: known.withLock { $0 } ? .unplugged : nil)
+      }
+    )
+    let recorder = Recorder()
+    recorder.start(directory: directory, metadata: [:], environment: launching)
+    known.withLock { $0 = true }
+    recorder.addFrame(interval: 8.3, expected: 8.3)
+    recorder.flush()
+
+    let recording = try onlyRecording(in: directory)
+    #expect(recording.device.maximumFramesPerSecond == 120)
+    #expect(recording.conditionsAtStart == recording.conditionsAtEnd)
+    #expect(recording.conditionsAtStart.batteryState == .unplugged)
   }
 
   /// Two recordings must never share a file, or the later one replaces the earlier.

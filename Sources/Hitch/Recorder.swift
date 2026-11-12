@@ -130,14 +130,20 @@ final class Recorder: Sendable {
         let open = begun - (state.ended[name] ?? 0)
         if open > 0 { unfinished[name] = open }
       }
+      let conditions = environment.conditions()
+      // The battery state is not known in the first moments after launch. It does not change
+      // in the seconds until it is, so the first known value stands for the start as well.
+      if state.conditionsAtStart.batteryState == nil {
+        state.conditionsAtStart.batteryState = conditions.batteryState
+      }
       let recording = Recording(
         startedAt: state.startedAt,
         endedAt: now,
         secondsSinceLaunch: environment.secondsSinceLaunch,
-        device: environment.device,
+        device: environment.device(),
         app: environment.app,
         conditionsAtStart: state.conditionsAtStart,
-        conditionsAtEnd: environment.conditions(),
+        conditionsAtEnd: conditions,
         metadata: state.metadata,
         frames: state.frames,
         series: state.seriesOrder.map {

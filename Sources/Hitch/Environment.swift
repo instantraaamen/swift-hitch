@@ -20,7 +20,9 @@ import HitchRecording
 
 /// What the recorder knows about where it is running.
 struct Environment: Sendable {
-  var device: Recording.Device
+  /// The device. The display's refresh rate is only known once a scene is connected, which
+  /// is after a recording that starts at launch has begun, so this is read at every write.
+  var device: @Sendable () -> Recording.Device
   var app: Recording.App
   var secondsSinceLaunch: Double?
   var conditions: @Sendable () -> Recording.Conditions
@@ -32,8 +34,14 @@ struct Environment: Sendable {
       // Battery state is only reported while monitoring is on.
       UIDevice.current.isBatteryMonitoringEnabled = true
     #endif
+    DeviceState.refresh()
+    let device = device
     return Environment(
-      device: device,
+      device: {
+        var device = device
+        device.maximumFramesPerSecond = DeviceState.maximumFramesPerSecond()
+        return device
+      },
       app: app,
       secondsSinceLaunch: secondsSinceLaunch(),
       conditions: { currentConditions() }
@@ -62,21 +70,8 @@ struct Environment: Sendable {
     return Recording.Device(
       model: simulated.map { "\($0) (Simulator)" } ?? model,
       systemName: systemName,
-      systemVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
-      maximumFramesPerSecond: maximumFramesPerSecond
+      systemVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
     )
-  }
-
-  @MainActor
-  private static var maximumFramesPerSecond: Int? {
-    #if os(iOS) || os(tvOS)
-      let screens = UIApplication.shared.connectedScenes.compactMap {
-        ($0 as? UIWindowScene)?.screen
-      }
-      return screens.map(\.maximumFramesPerSecond).max()
-    #else
-      return nil
-    #endif
   }
 
   private static var app: Recording.App {
@@ -128,28 +123,48 @@ struct Environment: Sendable {
     return Recording.Conditions(
       thermalState: thermalState,
       isLowPowerModeEnabled: isLowPowerModeEnabled,
-      batteryState: BatteryReader.state()
+      batteryState: DeviceState.batteryState()
     )
   }
 }
 
-/// Reads the battery state from any thread. `UIDevice` is main-actor isolated, so the value is
-/// kept up to date from the main actor and read from a lock.
-enum BatteryReader {
-  private static let cached = OSAllocatedUnfairLockBox<Recording.Conditions.BatteryState?>(nil)
+/// What `UIKit` knows about the device, readable from any thread.
+///
+/// `UIDevice` and `UIScreen` are main-actor isolated, and neither has an answer at launch: the
+/// battery state is unknown until monitoring has run for a moment, and there is no screen until
+/// a scene connects. The values are refreshed from the main actor whenever the app becomes
+/// active, and read from a lock.
+enum DeviceState {
+  private struct Values: Sendable {
+    var batteryState: Recording.Conditions.BatteryState?
+    var maximumFramesPerSecond: Int?
+  }
 
-  static func state() -> Recording.Conditions.BatteryState? { cached.value }
+  private static let values = OSAllocatedUnfairLockBox(Values())
+
+  static func batteryState() -> Recording.Conditions.BatteryState? { values.value.batteryState }
+  static func maximumFramesPerSecond() -> Int? { values.value.maximumFramesPerSecond }
 
   @MainActor
   static func refresh() {
+    var current = values.value
     #if os(iOS)
       switch UIDevice.current.batteryState {
-      case .unplugged: cached.value = .unplugged
-      case .charging: cached.value = .charging
-      case .full: cached.value = .full
-      case .unknown: cached.value = nil
-      @unknown default: cached.value = nil
+      case .unplugged: current.batteryState = .unplugged
+      case .charging: current.batteryState = .charging
+      case .full: current.batteryState = .full
+      case .unknown: break
+      @unknown default: break
       }
     #endif
+    #if os(iOS) || os(tvOS)
+      let screens = UIApplication.shared.connectedScenes.compactMap {
+        ($0 as? UIWindowScene)?.screen
+      }
+      if let fastest = screens.map(\.maximumFramesPerSecond).max() {
+        current.maximumFramesPerSecond = fastest
+      }
+    #endif
+    values.value = current
   }
 }

@@ -34,6 +34,7 @@
     private var lastTimestamp: CFTimeInterval = 0
     private var observers: [NSObjectProtocol] = []
     private var pending: Interaction?
+    private var framesUntilRefresh = 30
 
     /// A touch older than this is not the one being handled. It guards against an interaction
     /// that is marked from somewhere other than a touch handler.
@@ -57,7 +58,7 @@
             self?.lastTimestamp = 0
             self?.pending = nil
             self?.installTouchRecorder()
-            BatteryReader.refresh()
+            DeviceState.refresh()
           }
         },
         center.addObserver(
@@ -67,14 +68,14 @@
           MainActor.assumeIsolated {
             self?.lastTimestamp = 0
             self?.pending = nil
-            BatteryReader.refresh()
+            DeviceState.refresh()
           }
           // The app may be suspended or ended from here on, so write what there is.
           Recorder.shared.flush()
         },
       ]
       installTouchRecorder()
-      BatteryReader.refresh()
+      DeviceState.refresh()
     }
 
     func stop() {
@@ -84,7 +85,7 @@
       pending = nil
       observers.forEach(NotificationCenter.default.removeObserver)
       observers = []
-      BatteryReader.refresh()
+      DeviceState.refresh()
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -93,6 +94,10 @@
       let interval = (link.timestamp - lastTimestamp) * 1000
       let expected = (link.targetTimestamp - link.timestamp) * 1000
       Recorder.shared.addFrame(interval: interval, expected: max(expected, 0))
+      // A recording that starts at launch begins before a scene is connected and before the
+      // battery state is known. Both are there once frames are being delivered.
+      framesUntilRefresh -= 1
+      if framesUntilRefresh == 0 { DeviceState.refresh() }
       trackInteraction(interval: interval, timestamp: link.timestamp)
     }
 

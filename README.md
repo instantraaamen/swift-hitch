@@ -164,6 +164,8 @@ The terms are Apple's. A hitch is a frame that arrives later than the display ex
 
 The figures are measured where the app can see them, with a `CADisplayLink` on the main run loop. A hitch here means the main thread was busy when the display asked for a frame, and a frame counts when it is more than half an interval late. A frame that the main thread delivered on time and the render server presented late is not seen. Instruments and MetricKit measure at the display, so their hitch time ratio for the same session can differ. Use these figures to compare one build with another, not with a figure from another tool.
 
+On an iPhone with a 120 Hz display, a display link is delivered at 60 Hz unless the app's Info.plist sets `CADisableMinimumFrameDurationOnPhone`. The recording stores the interval the display link actually ran at, the report shows it as `expected`, and a comparison warns when two recordings ran at different intervals.
+
 A debug build is not optimized, and its durations are longer than what users see. The recording says which kind of build it came from, and the report points it out.
 
 ## Products
