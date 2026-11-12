@@ -43,7 +43,7 @@ public struct HitchSignposter: Sendable {
     self.signposter = signposter
   }
 
-  /// A begun interval. Pass it to ``endInterval(_:_:tag:)``.
+  /// A begun interval. Pass it to ``endInterval(_:_:tag:_:)``.
   public struct IntervalState: @unchecked Sendable {
     // `OSSignpostIntervalState` is immutable once created.
     let signpostState: OSSignpostIntervalState
@@ -52,8 +52,25 @@ public struct HitchSignposter: Sendable {
   }
 
   /// Begins an interval.
-  public func beginInterval(_ name: StaticString, id: OSSignpostID = .exclusive) -> IntervalState {
-    let state = signposter.beginInterval(name, id: id)
+  ///
+  /// - Parameters:
+  ///   - name: The name of the signpost, and of the series the interval's length is stored in.
+  ///   - id: Tells apart intervals of the same name that overlap.
+  ///   - message: Text to show with the signpost in Instruments. It is logged as public, and
+  ///     only built when signposts are being collected.
+  public func beginInterval(
+    _ name: StaticString, id: OSSignpostID = .exclusive, _ message: @autoclosure () -> String = ""
+  ) -> IntervalState {
+    let state: OSSignpostIntervalState
+    if signposter.isEnabled {
+      let text = message()
+      state =
+        text.isEmpty
+        ? signposter.beginInterval(name, id: id)
+        : signposter.beginInterval(name, id: id, "\(text, privacy: .public)")
+    } else {
+      state = signposter.beginInterval(name, id: id)
+    }
     guard Recorder.shared.isRecording else {
       return IntervalState(signpostState: state, start: nil)
     }
@@ -65,14 +82,29 @@ public struct HitchSignposter: Sendable {
   ///
   /// - Parameters:
   ///   - name: The name the interval was begun with.
-  ///   - state: What ``beginInterval(_:id:)`` returned.
+  ///   - state: What ``beginInterval(_:id:_:)`` returned.
   ///   - tag: How the interval ended, when that changes what its length means. Each tag gets
-  ///     its own figures.
-  public func endInterval(_ name: StaticString, _ state: IntervalState, tag: String? = nil) {
-    signposter.endInterval(name, state.signpostState)
+  ///     its own figures, and the tag is shown with the signpost in Instruments.
+  ///   - message: More text to show with the signpost in Instruments, such as a count. It is
+  ///     logged as public, and only built when signposts are being collected.
+  public func endInterval(
+    _ name: StaticString, _ state: IntervalState, tag: String? = nil,
+    _ message: @autoclosure () -> String = ""
+  ) {
+    // The length is taken first, so that building the message is not part of it.
+    let end = DispatchTime.now().uptimeNanoseconds
+    if signposter.isEnabled {
+      let text = [tag ?? "", message()].filter { !$0.isEmpty }.joined(separator: " ")
+      if text.isEmpty {
+        signposter.endInterval(name, state.signpostState)
+      } else {
+        signposter.endInterval(name, state.signpostState, "\(text, privacy: .public)")
+      }
+    } else {
+      signposter.endInterval(name, state.signpostState)
+    }
     guard let start = state.start else { return }
-    let milliseconds = Double(DispatchTime.now().uptimeNanoseconds &- start) / 1_000_000
-    Recorder.shared.endInterval("\(name)", tag: tag, milliseconds)
+    Recorder.shared.endInterval("\(name)", tag: tag, Double(end &- start) / 1_000_000)
   }
 
   /// Runs `body` inside an interval.
