@@ -1,119 +1,48 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-hitch open source project
+//
+// Copyright (c) 2026 the swift-hitch project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
 import Foundation
+import HitchRecording
 import Testing
 
 @testable import Hitch
 
-private func recording(intervals: [Double] = [], expected: Double = 10, samples: [String: [Double]] = [:]) -> Recording {
-  Recording(
-    startedAt: Date(timeIntervalSince1970: 0),
-    endedAt: Date(timeIntervalSince1970: 60),
-    device: .init(model: "iPhone17,1", systemName: "iOS", systemVersion: "18.2.0"),
-    app: .init(bundleIdentifier: "com.example.app", version: "1.0", build: "1"),
-    frames: .init(intervals: intervals, expected: intervals.map { _ in expected }),
-    samples: samples
-  )
+private let environment = Environment(
+  device: .init(
+    model: "iPhone17,1", systemName: "iOS", systemVersion: "18.2.0", maximumFramesPerSecond: 120),
+  app: .init(
+    bundleIdentifier: "com.example.app", version: "1.0", build: "1", configuration: .debug),
+  secondsSinceLaunch: 0.4,
+  conditions: { .init(thermalState: .fair, isLowPowerModeEnabled: false, batteryState: .charging) }
+)
+
+private func temporaryDirectory() -> URL {
+  FileManager.default.temporaryDirectory.appendingPathComponent("hitch-tests-\(UUID().uuidString)")
 }
 
-@Suite struct StatisticsTests {
-  @Test func percentileUsesNearestRank() {
-    let values = (1...100).map(Double.init)
-    #expect(Statistics.percentile(values, 0.5) == 50)
-    #expect(Statistics.percentile(values, 0.95) == 95)
-    #expect(Statistics.percentile([7], 0.95) == 7)
-    #expect(Statistics.percentile([], 0.5) == 0)
-  }
-
-  @Test func medianAveragesTheMiddlePair() {
-    #expect(Statistics.median([3, 1, 2]) == 2)
-    #expect(Statistics.median([4, 1, 3, 2]) == 2.5)
-  }
-
-  @Test func smoothFramesHaveNoHitches() throws {
-    let frames = try #require(FrameStatistics(recording(intervals: Array(repeating: 10.2, count: 100)).frames))
-    #expect(frames.hitchCount == 0)
-    #expect(frames.hitchTimeRatio == 0)
-    #expect(frames.rating == .good)
-  }
-
-  @Test func lateFramesAddUpToHitchTime() throws {
-    // 98 frames on time, one dropped frame (10 ms late) and one long stall (190 ms late).
-    let intervals = Array(repeating: 10.0, count: 98) + [20, 200]
-    let frames = try #require(FrameStatistics(recording(intervals: intervals).frames))
-    #expect(frames.hitchCount == 2)
-    #expect(frames.hitchTime == 200)
-    #expect(frames.longFrameCount == 1)
-    #expect(frames.max == 200)
-    // 200 ms late over 1.2 s of recording.
-    #expect(abs(frames.hitchTimeRatio - 200 / 1.2) < 0.001)
-    #expect(frames.rating == .critical)
-  }
-
-  @Test func expectedIntervalFollowsTheDisplay() throws {
-    // A display that drops from 120 Hz to 60 Hz is not hitching.
-    let frames = Recording.Frames(intervals: [8.3, 8.3, 16.7, 16.7], expected: [8.3, 8.3, 16.7, 16.7])
-    #expect(try #require(FrameStatistics(frames)).hitchCount == 0)
-  }
-
-  @Test func emptyRecordingHasNoFrameStatistics() {
-    #expect(FrameStatistics(Recording.Frames()) == nil)
-    #expect(Summary(recording()).metrics.isEmpty)
-  }
-
-  @Test func summaryFlattensMetrics() {
-    let summary = Summary(recording(intervals: [10, 10], samples: ["image.load": [1, 2, 3], "empty": []]))
-    #expect(summary.metrics["image.load.p50"] == 2)
-    #expect(summary.metrics["image.load.p95"] == 3)
-    #expect(summary.metrics["hitchTimeRatio"] == 0)
-    #expect(summary.metrics["empty.p50"] == nil)
-  }
-}
-
-@Suite struct ComparisonTests {
-  private func summary(stall: Double) -> Summary {
-    Summary(recording(intervals: Array(repeating: 10.0, count: 99) + [stall]))
-  }
-
-  @Test func changeLargerThanNoiseCounts() throws {
-    let comparison = Comparison(
-      before: [summary(stall: 300), summary(stall: 310), summary(stall: 320)],
-      after: [summary(stall: 100), summary(stall: 110), summary(stall: 90)]
-    )
-    let ratio = try #require(comparison.metrics.first { $0.name == "hitchTimeRatio" })
-    #expect(ratio.verdict == .improved)
-    #expect(ratio.after < ratio.before)
-    #expect(ratio.noise > 0)
-  }
-
-  @Test func changeWithinNoiseIsUnchanged() throws {
-    let comparison = Comparison(
-      before: [summary(stall: 100), summary(stall: 300)],
-      after: [summary(stall: 220)]
-    )
-    let ratio = try #require(comparison.metrics.first { $0.name == "hitchTimeRatio" })
-    #expect(ratio.verdict == .unchanged)
-  }
-
-  @Test func regressionIsReported() throws {
-    let comparison = Comparison(before: [summary(stall: 20)], after: [summary(stall: 400)])
-    let ratio = try #require(comparison.metrics.first { $0.name == "hitchTimeRatio" })
-    #expect(ratio.verdict == .regressed)
-  }
-
-  @Test func goalsReportOnlyWhatIsExceeded() {
-    let goals = Goals(limits: ["hitchTimeRatio": 5, "frame.max": 500, "missing.p95": 1])
-    let violations = goals.violations(in: Goals.medians(of: [summary(stall: 300), summary(stall: 300)]))
-    #expect(violations.map(\.name) == ["hitchTimeRatio"])
-  }
+private func onlyRecording(in directory: URL) throws -> Recording {
+  let files = try FileManager.default.contentsOfDirectory(
+    at: directory, includingPropertiesForKeys: nil)
+  #expect(files.count == 1)
+  return try Recording.load(from: try #require(files.first))
 }
 
 @Suite struct RecorderTests {
-  private func temporaryDirectory() -> URL {
-    FileManager.default.temporaryDirectory.appendingPathComponent("hitch-tests-\(UUID().uuidString)")
-  }
-
-  @Test func ignoresSamplesUntilStarted() {
+  @Test func ignoresEverythingUntilStarted() {
     let recorder = Recorder()
-    recorder.addSample("ignored", 1)
+    recorder.addSample("ignored", tag: nil, 1)
+    recorder.beginInterval("ignored")
+    recorder.addFrame(interval: 8, expected: 8)
     #expect(!recorder.isRecording)
   }
 
@@ -123,41 +52,104 @@ private func recording(intervals: [Double] = [], expected: Double = 10, samples:
     let recorder = Recorder()
     let start = Date(timeIntervalSince1970: 1_700_000_000)
 
-    #expect(recorder.start(directory: directory, metadata: ["commit": "abc123"], now: start))
-    #expect(!recorder.start(directory: directory, metadata: [:]))
-    recorder.addSample("image.load", 4)
-    recorder.addSample("image.load", 6)
-    recorder.addFrame(interval: 8.3, expected: 8.3)
+    #expect(
+      recorder.start(
+        directory: directory, metadata: ["commit": "abc123"], environment: environment, now: start))
+    #expect(!recorder.start(directory: directory, metadata: [:], environment: environment))
+    recorder.addSample("image.load", tag: "hit", 4)
+    recorder.addSample("image.load", tag: "miss", 60)
+    recorder.addSample("image.load", tag: "hit", 6)
+    recorder.addFrame(interval: 8.3333333, expected: 8.3333333)
+    recorder.addFrame(interval: 16.7, expected: 8.3333333)
     recorder.flush(now: start.addingTimeInterval(30))
 
-    let file = directory.appendingPathComponent("20231114-221320.json")
-    let recording = try Recording.load(from: file)
+    let recording = try Recording.load(
+      from: directory.appendingPathComponent("20231114-221320-000.json"))
     #expect(recording.version == Recording.currentVersion)
     #expect(recording.metadata == ["commit": "abc123"])
-    #expect(recording.samples == ["image.load": [4, 6]])
-    #expect(recording.frames.intervals == [8.3])
+    #expect(
+      recording.series == [
+        .init(name: "image.load", tag: "hit", values: [4, 6]),
+        .init(name: "image.load", tag: "miss", values: [60]),
+      ])
+    #expect(recording.frames.intervals == [8.333, 16.7])
+    #expect(recording.frames.expected == [.init(count: 2, interval: 8.333)])
     #expect(recording.endedAt == start.addingTimeInterval(30))
+    #expect(recording.device.maximumFramesPerSecond == 120)
+    #expect(recording.app.configuration == .debug)
+    #expect(recording.conditionsAtStart.thermalState == .fair)
+    #expect(recording.conditionsAtEnd.batteryState == .charging)
+    #expect(recording.secondsSinceLaunch == 0.4)
+  }
+
+  /// A launch that records nothing still leaves a file, so "the app never started the
+  /// recorder" and "the session produced no data" are told apart.
+  @Test func anEmptyRecordingIsStillWritten() throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let recorder = Recorder()
+    recorder.start(directory: directory, metadata: ["run": "r1"], environment: environment)
+    recorder.flush()
+
+    let recording = try onlyRecording(in: directory)
+    #expect(recording.metadata == ["run": "r1"])
+    #expect(recording.series.isEmpty)
   }
 
   @Test func stopFlushesAndEndsTheRecording() throws {
     let directory = temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let recorder = Recorder()
-    recorder.start(directory: directory, metadata: [:])
-    recorder.addSample("a", 1)
+    recorder.start(directory: directory, metadata: [:], environment: environment)
+    recorder.addSample("a", tag: nil, 1)
     recorder.stop()
-    recorder.addSample("a", 2)
+    recorder.addSample("a", tag: nil, 2)
 
-    let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-    #expect(files.count == 1)
-    #expect(try Recording.load(from: files[0]).samples == ["a": [1]])
+    #expect(try onlyRecording(in: directory).series == [.init(name: "a", values: [1])])
   }
 
-  @Test func recordingSurvivesARoundTrip() throws {
-    let original = recording(intervals: [10, 20], samples: ["a": [1.5]])
-    let url = temporaryDirectory().appendingPathExtension("json")
-    defer { try? FileManager.default.removeItem(at: url) }
-    try original.encoded().write(to: url)
-    #expect(try Recording.load(from: url) == original)
+  /// An interval that only closes on one of its outcomes used to stay open on the others, and
+  /// its figures quietly covered a subset.
+  @Test func countsIntervalsThatNeverEnd() throws {
+    let directory = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let recorder = Recorder()
+    recorder.start(directory: directory, metadata: [:], environment: environment)
+    for _ in 0..<5 { recorder.beginInterval("image.final") }
+    recorder.endInterval("image.final", tag: "full", 120)
+    recorder.endInterval("image.final", tag: "full", 140)
+    recorder.beginInterval("image.load")
+    recorder.endInterval("image.load", tag: nil, 3)
+    recorder.flush()
+
+    let recording = try onlyRecording(in: directory)
+    #expect(recording.unfinishedIntervals == ["image.final": 3])
+    #expect(recording.series.first { $0.name == "image.final" }?.values == [120, 140])
+  }
+
+  /// Two recordings must never share a file, or the later one replaces the earlier.
+  @Test func everyStartGetsItsOwnFile() {
+    let first = Recorder.fileName(for: Date(timeIntervalSince1970: 1_700_000_000.100))
+    let second = Recorder.fileName(for: Date(timeIntervalSince1970: 1_700_000_000.900))
+    #expect(first != second)
+    #expect(first < second)
+  }
+}
+
+@Suite struct LaunchArgumentTests {
+  @Test func readsMetadataFromLaunchArguments() {
+    let arguments = [
+      "App", "--hitch-record", "--hitch-metadata", "label=before", "--other", "--hitch-metadata",
+      "commit=abc123-dirty", "--hitch-metadata", "note=a=b", "--hitch-metadata", "=broken",
+      "--hitch-metadata",
+    ]
+    #expect(
+      Hitch.metadata(in: arguments) == ["label": "before", "commit": "abc123-dirty", "note": "a=b"])
+    #expect(Hitch.metadata(in: ["App"]).isEmpty)
+  }
+
+  @Test @MainActor func doesNotStartWithoutTheArgument() {
+    #expect(!Hitch.startIfRequested(arguments: ["App", "--something-else"]))
+    #expect(!Hitch.isRecording)
   }
 }

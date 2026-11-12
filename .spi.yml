@@ -1,5 +1,5 @@
 version: 1
 builder:
   configs:
-    - documentation_targets: [Hitch]
+    - documentation_targets: [Hitch, HitchAnalysis, HitchRecording]
       platform: ios

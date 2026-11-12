@@ -1,4 +1,18 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-hitch open source project
+//
+// Copyright (c) 2026 the swift-hitch project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
 import Foundation
+import HitchRecording
 
 /// A before/after comparison of two sets of recordings.
 ///
@@ -20,6 +34,10 @@ public struct Comparison: Equatable, Sendable {
     /// The range (largest minus smallest) across the "before" runs.
     public var noise: Double
     public var verdict: Verdict
+    /// The figure of each "before" run, in the order the runs were given.
+    public var beforeRuns: [Double]
+    /// The figure of each "after" run, in the order the runs were given.
+    public var afterRuns: [Double]
 
     public var delta: Double { after - before }
   }
@@ -42,14 +60,17 @@ public struct Comparison: Equatable, Sendable {
       // Rounding alone moves a figure by a fraction of a percent, so a change also has to be
       // at least 1% of the "before" value.
       let threshold = max(noise, abs(beforeMedian) * 0.01)
-      let verdict: Verdict = abs(delta) <= threshold ? .unchanged : (delta < 0 ? .improved : .regressed)
-      return Metric(name: name, before: beforeMedian, after: afterMedian, noise: noise, verdict: verdict)
+      let verdict: Verdict =
+        abs(delta) <= threshold ? .unchanged : (delta < 0 ? .improved : .regressed)
+      return Metric(
+        name: name, before: beforeMedian, after: afterMedian, noise: noise, verdict: verdict,
+        beforeRuns: beforeValues, afterRuns: afterValues)
     }
   }
 }
 
 /// Upper limits for metrics, read from a JSON object such as
-/// `{"hitchTimeRatio": 5, "image.load.p95": 16}`.
+/// `{"hitchTimeRatio": 5, "image.load[hit].p95": 16}`.
 public struct Goals: Equatable, Sendable {
   public struct Violation: Equatable, Sendable {
     public var name: String
@@ -67,12 +88,21 @@ public struct Goals: Equatable, Sendable {
     Goals(limits: try JSONDecoder().decode([String: Double].self, from: Data(contentsOf: url)))
   }
 
-  /// Returns the goals that the given figures exceed. A goal without a figure is ignored.
+  /// Returns the goals that the given figures exceed.
   public func violations(in metrics: [String: Double]) -> [Violation] {
     limits.keys.sorted().compactMap { name in
       guard let limit = limits[name], let actual = metrics[name], actual > limit else { return nil }
       return Violation(name: name, limit: limit, actual: actual)
     }
+  }
+
+  /// Returns the goals that have no figure to check.
+  ///
+  /// A goal goes unchecked when its name does not match what the app records, because of a
+  /// typo or a renamed series, and when the session never reached that part of the app. Either
+  /// way the goal was not met; it was not looked at.
+  public func unchecked(in metrics: [String: Double]) -> [String] {
+    limits.keys.filter { metrics[$0] == nil }.sorted()
   }
 
   /// The median of each metric across several runs.

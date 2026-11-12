@@ -1,13 +1,28 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-hitch open source project
+//
+// Copyright (c) 2026 the swift-hitch project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
 import ArgumentParser
 import Foundation
-import Hitch
+import HitchRecording
 
 struct Record: ParsableCommand {
   static let configuration = CommandConfiguration(
-    abstract: "Launch the app with recording on, wait while you use it, then collect the recording.",
+    abstract:
+      "Launch the app with recording on, wait while you use it, then collect the recording.",
     discussion: """
       The app must call Hitch.startIfRequested() at launch. Use the app the same way for every \
-      run you intend to compare: same screens, same gestures, about the same length.
+      run you intend to compare: same screens, same gestures, about the same length. Keep the \
+      device in the same state as well: unplugged or charging, cool, Low Power Mode off.
       """
   )
 
@@ -26,23 +41,55 @@ struct Record: ParsableCommand {
   @Option(name: .long, help: "A prefix for the saved file, such as \"before\".")
   var label: String?
 
+  @Option(
+    name: .long, parsing: .singleValue,
+    help: "A value to store with the recording, as key=value. May be repeated.")
+  var metadata: [String] = []
+
+  @Flag(
+    name: .long, help: "Do not store the git commit of the current directory with the recording.")
+  var noCommit = false
+
   @Argument(parsing: .postTerminator, help: "Extra launch arguments for the app, after --.")
   var appArguments: [String] = []
+
+  // The same strings as `Hitch.launchArgument` and `Hitch.metadataArgument`. The tool does not
+  // link the recorder, which only builds where the app runs.
+  static let recordArgument = "--hitch-record"
+  static let metadataArgument = "--hitch-metadata"
 
   func validate() throws {
     guard (device != nil) != (simulator != nil) else {
       throw ValidationError("Pass exactly one of --device or --simulator.")
     }
+    for pair in metadata where !pair.contains("=") || pair.hasPrefix("=") {
+      throw ValidationError("--metadata takes key=value, got \"\(pair)\".")
+    }
   }
 
   func run() throws {
-    let launchArguments = [Hitch.launchArgument] + appArguments
+    // The run identifier tells this launch's recording apart from older ones on the device,
+    // without relying on the device's clock agreeing with this Mac's.
+    let run = UUID().uuidString.lowercased()
+    var pairs = metadata + ["run=\(run)"]
+    if let label { pairs.append("label=\(label)") }
+    if !noCommit, let commit = Git.describeHead() { pairs.append("commit=\(commit)") }
+    let launchArguments =
+      [Self.recordArgument] + pairs.flatMap { [Self.metadataArgument, $0] } + appArguments
+
     if let device {
-      try Shell.run(
-        "/usr/bin/xcrun",
-        ["devicectl", "device", "process", "launch", "--device", device, "--terminate-existing", bundleID]
-          + launchArguments
-      )
+      // The first command after a while without contact often fails while the connection to
+      // the device is still being set up.
+      try Shell.retrying(attempts: 3, pause: 5) {
+        try Shell.run(
+          "/usr/bin/xcrun",
+          [
+            "devicectl", "device", "process", "launch", "--device", device, "--terminate-existing",
+            bundleID,
+          ]
+            + launchArguments
+        )
+      }
     } else if let simulator {
       try Shell.run(
         "/usr/bin/xcrun",
@@ -63,14 +110,17 @@ struct Record: ParsableCommand {
     let recordings: URL
     if let device {
       recordings = workspace.appendingPathComponent("hitch")
-      try Shell.run(
-        "/usr/bin/xcrun",
-        [
-          "devicectl", "device", "copy", "from", "--device", device,
-          "--domain-type", "appDataContainer", "--domain-identifier", bundleID,
-          "--source", "Documents/hitch", "--destination", recordings.path,
-        ]
-      )
+      try Shell.retrying(attempts: 3, pause: 5) {
+        try? FileManager.default.removeItem(at: recordings)
+        try Shell.run(
+          "/usr/bin/xcrun",
+          [
+            "devicectl", "device", "copy", "from", "--device", device,
+            "--domain-type", "appDataContainer", "--domain-identifier", bundleID,
+            "--source", "Documents/hitch", "--destination", recordings.path,
+          ]
+        )
+      }
     } else {
       let container = try Shell.run(
         "/usr/bin/xcrun", ["simctl", "get_app_container", simulator ?? "booted", bundleID, "data"]
@@ -78,25 +128,57 @@ struct Record: ParsableCommand {
       recordings = URL(fileURLWithPath: container).appendingPathComponent("Documents/hitch")
     }
 
-    // File names are UTC timestamps, so the last one by name is the launch that just ran.
-    let files = try FileManager.default.contentsOfDirectory(at: recordings, includingPropertiesForKeys: nil)
-      .filter { $0.pathExtension == "json" }
-      .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    guard let latest = files.last else {
+    guard let (file, recording) = Self.recording(ofRun: run, in: recordings) else {
       throw ValidationError(
-        "The app wrote no recording. Check that it calls Hitch.startIfRequested() at launch.")
+        """
+        The app wrote no recording for this launch. Check that it calls Hitch.startIfRequested() \
+        at launch, and that the build you launched includes that call (it is usually behind \
+        #if DEBUG).
+        """)
     }
 
     let outputDirectory = URL(fileURLWithPath: output)
     try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-    let name = [label, latest.lastPathComponent].compactMap { $0 }.joined(separator: "-")
+    let name = [label, file.lastPathComponent].compactMap { $0 }.joined(separator: "-")
     let destination = outputDirectory.appendingPathComponent(name)
     if FileManager.default.fileExists(atPath: destination.path) {
       try FileManager.default.removeItem(at: destination)
     }
-    try FileManager.default.copyItem(at: latest, to: destination)
+    try FileManager.default.copyItem(at: file, to: destination)
 
-    print(Format.report(try Recording.load(from: destination), title: destination.path))
+    print(Format.report(recording, title: destination.path))
+  }
+
+  /// Finds the recording whose metadata carries the given run identifier.
+  static func recording(ofRun run: String, in directory: URL) -> (URL, Recording)? {
+    let files =
+      (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))
+      ?? []
+    // Newest first: file names start with a UTC timestamp.
+    for file in files.filter({ $0.pathExtension == "json" }).sorted(by: {
+      $0.lastPathComponent > $1.lastPathComponent
+    }) {
+      guard let recording = try? Recording.load(from: file), recording.metadata["run"] == run else {
+        continue
+      }
+      return (file, recording)
+    }
+    return nil
+  }
+}
+
+enum Git {
+  /// The short commit of the current directory, with `-dirty` when there are uncommitted
+  /// changes. `nil` outside a repository.
+  static func describeHead() -> String? {
+    guard
+      let commit = try? Shell.run("/usr/bin/git", ["rev-parse", "--short", "HEAD"])
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !commit.isEmpty
+    else { return nil }
+    let status = (try? Shell.run("/usr/bin/git", ["status", "--porcelain"])) ?? ""
+    return status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? commit : "\(commit)-dirty"
   }
 }
 
@@ -129,5 +211,17 @@ enum Shell {
       )
     }
     return output
+  }
+
+  /// Runs `body` again after a pause when it throws, up to `attempts` times in all.
+  static func retrying(attempts: Int, pause: TimeInterval, _ body: () throws -> Void) throws {
+    for attempt in 1...attempts {
+      do {
+        return try body()
+      } catch  where attempt < attempts {
+        print("That did not work (\(error)). Trying again in \(Int(pause)) s.")
+        Thread.sleep(forTimeInterval: pause)
+      }
+    }
   }
 }

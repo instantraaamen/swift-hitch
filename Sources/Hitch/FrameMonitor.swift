@@ -1,4 +1,17 @@
-#if os(iOS) || os(tvOS)
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-hitch open source project
+//
+// Copyright (c) 2026 the swift-hitch project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
+#if canImport(UIKit) && !os(watchOS)
   import UIKit
 
   /// Watches the display link on the main run loop.
@@ -9,13 +22,22 @@
   final class FrameMonitor: NSObject {
     static let shared = FrameMonitor()
 
+    private struct Interaction {
+      var name: String
+      var tag: String?
+      /// When the first frame after the interaction arrived. `nil` until it does.
+      var firstFrameAt: CFTimeInterval?
+      var longest = 0.0
+    }
+
     private var link: CADisplayLink?
     private var lastTimestamp: CFTimeInterval = 0
     private var observers: [NSObjectProtocol] = []
-    private var pending: (name: String, frames: Int, longest: Double)?
+    private var pending: Interaction?
 
-    /// How many frames after an interaction are inspected.
-    private static let framesAfterInteraction = 30
+    /// A touch older than this is not the one being handled. It guards against an interaction
+    /// that is marked from somewhere other than a touch handler.
+    private static let touchValidity: TimeInterval = 2
 
     func start() {
       guard link == nil else { return }
@@ -27,18 +49,32 @@
       observers = [
         // The display link pauses in the background. Without this, the first frame after
         // coming back would be recorded as a hitch that lasted the whole absence.
-        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) {
+        center.addObserver(
+          forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) {
           [weak self] _ in
           MainActor.assumeIsolated {
             self?.lastTimestamp = 0
+            self?.pending = nil
             self?.installTouchRecorder()
+            BatteryReader.refresh()
           }
         },
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) {
-          _ in Recorder.shared.flush()
+        center.addObserver(
+          forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) {
+          [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.lastTimestamp = 0
+            self?.pending = nil
+            BatteryReader.refresh()
+          }
+          // The app may be suspended or ended from here on, so write what there is.
+          Recorder.shared.flush()
         },
       ]
       installTouchRecorder()
+      BatteryReader.refresh()
     }
 
     func stop() {
@@ -48,6 +84,7 @@
       pending = nil
       observers.forEach(NotificationCenter.default.removeObserver)
       observers = []
+      BatteryReader.refresh()
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -56,35 +93,44 @@
       let interval = (link.timestamp - lastTimestamp) * 1000
       let expected = (link.targetTimestamp - link.timestamp) * 1000
       Recorder.shared.addFrame(interval: interval, expected: max(expected, 0))
-      trackInteraction(interval: interval)
+      trackInteraction(interval: interval, timestamp: link.timestamp)
     }
 
     // MARK: Interactions
 
-    func markInteraction(_ name: String) {
+    func markInteraction(_ name: String, tag: String?) {
       let now = ProcessInfo.processInfo.systemUptime
-      if TouchRecorder.lastTouchUp > 0 {
-        Recorder.shared.addSample("\(name).touchUpToHandler", (now - TouchRecorder.lastTouchUp) * 1000)
+      if let waited = Self.elapsed(since: TouchRecorder.lastTouchUp, now: now) {
+        Recorder.shared.addSample("\(name).touchUpToHandler", tag: tag, waited * 1000)
       }
-      if TouchRecorder.lastTouchDown > 0 {
-        Recorder.shared.addSample("\(name).touchDownToHandler", (now - TouchRecorder.lastTouchDown) * 1000)
+      if let waited = Self.elapsed(since: TouchRecorder.lastTouchDown, now: now) {
+        Recorder.shared.addSample("\(name).touchDownToHandler", tag: tag, waited * 1000)
       }
-      pending = (name, 0, 0)
+      pending = Interaction(name: name, tag: tag)
     }
 
-    private func trackInteraction(interval: Double) {
+    private static func elapsed(since touch: TimeInterval, now: TimeInterval) -> TimeInterval? {
+      guard touch > 0, now >= touch, now - touch <= touchValidity else { return nil }
+      return now - touch
+    }
+
+    private func trackInteraction(interval: Double, timestamp: CFTimeInterval) {
       guard var current = pending else { return }
-      if current.frames == 0 {
-        if TouchRecorder.lastTouchUp > 0 {
-          let now = ProcessInfo.processInfo.systemUptime
-          Recorder.shared.addSample("\(current.name).firstFrame", (now - TouchRecorder.lastTouchUp) * 1000)
+      guard let firstFrameAt = current.firstFrameAt else {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let waited = Self.elapsed(since: TouchRecorder.lastTouchUp, now: now) {
+          Recorder.shared.addSample("\(current.name).firstFrame", tag: current.tag, waited * 1000)
         }
-      } else {
-        current.longest = max(current.longest, interval)
+        current.firstFrameAt = timestamp
+        pending = current
+        return
       }
-      current.frames += 1
-      if current.frames > Self.framesAfterInteraction {
-        Recorder.shared.addSample("\(current.name).longestFrameAfter", current.longest)
+      // The frame that crosses the end of the window counts too: a single long hitch right
+      // after the interaction is exactly what this figure is for.
+      current.longest = max(current.longest, interval)
+      if (timestamp - firstFrameAt) * 1000 >= Hitch.interactionWindow {
+        Recorder.shared.addSample(
+          "\(current.name).longestFrameAfter", tag: current.tag, current.longest)
         pending = nil
       } else {
         pending = current

@@ -1,16 +1,42 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-hitch open source project
+//
+// Copyright (c) 2026 the swift-hitch project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
 import Foundation
+import HitchRecording
 import os
 
-/// Collects samples and writes them to disk. All access goes through one lock, so samples can
-/// be added from any thread.
+/// Collects durations and frames and writes them to disk. All access goes through one lock, so
+/// values can be added from any thread.
 final class Recorder: Sendable {
+  struct SeriesKey: Hashable {
+    var name: String
+    var tag: String?
+  }
+
   struct State {
     var isRecording = false
     var startedAt = Date()
     var metadata: [String: String] = [:]
+    var environment: Environment?
+    var conditionsAtStart = Recording.Conditions(
+      thermalState: .nominal, isLowPowerModeEnabled: false)
     var fileURL: URL?
     var frames = Recording.Frames()
-    var samples: [String: [Double]] = [:]
+    var series: [SeriesKey: [Double]] = [:]
+    /// The order series were first seen in, so that the file does not reshuffle between writes.
+    var seriesOrder: [SeriesKey] = []
+    var begun: [String: Int] = [:]
+    var ended: [String: Int] = [:]
     var isDirty = false
   }
 
@@ -25,14 +51,22 @@ final class Recorder: Sendable {
 
   /// Starts collecting. Returns `false` when a recording is already running.
   @discardableResult
-  func start(directory: URL, metadata: [String: String], now: Date = Date()) -> Bool {
-    state.withLock { state in
+  func start(
+    directory: URL, metadata: [String: String], environment: Environment, now: Date = Date()
+  ) -> Bool {
+    let conditions = environment.conditions()
+    return state.withLock { state in
       guard !state.isRecording else { return false }
       state = State()
       state.isRecording = true
       state.startedAt = now
       state.metadata = metadata
+      state.environment = environment
+      state.conditionsAtStart = conditions
       state.fileURL = directory.appendingPathComponent(Self.fileName(for: now))
+      // Written even when nothing is recorded, so that an empty recording is told apart from
+      // an app that never started the recorder.
+      state.isDirty = true
       return true
     }
   }
@@ -42,36 +76,74 @@ final class Recorder: Sendable {
     state.withLock { $0.isRecording = false }
   }
 
-  func addSample(_ name: String, _ milliseconds: Double) {
+  func addSample(_ name: String, tag: String?, _ milliseconds: Double) {
     state.withLock { state in
       guard state.isRecording else { return }
-      state.samples[name, default: []].append(milliseconds)
+      Self.append(milliseconds, to: SeriesKey(name: name, tag: tag), in: &state)
+    }
+  }
+
+  func beginInterval(_ name: String) {
+    state.withLock { state in
+      guard state.isRecording else { return }
+      state.begun[name, default: 0] += 1
       state.isDirty = true
+    }
+  }
+
+  func endInterval(_ name: String, tag: String?, _ milliseconds: Double) {
+    state.withLock { state in
+      guard state.isRecording else { return }
+      state.ended[name, default: 0] += 1
+      Self.append(milliseconds, to: SeriesKey(name: name, tag: tag), in: &state)
     }
   }
 
   func addFrame(interval: Double, expected: Double) {
     state.withLock { state in
       guard state.isRecording else { return }
-      state.frames.intervals.append(interval)
-      state.frames.expected.append(expected)
+      state.frames.append(interval: Self.rounded(interval), expected: Self.rounded(expected))
       state.isDirty = true
     }
+  }
+
+  private static func append(_ milliseconds: Double, to key: SeriesKey, in state: inout State) {
+    if state.series[key] == nil { state.seriesOrder.append(key) }
+    state.series[key, default: []].append(rounded(milliseconds))
+    state.isDirty = true
+  }
+
+  /// A microsecond is far below what the clock and the display resolve, and keeps the file small.
+  private static func rounded(_ milliseconds: Double) -> Double {
+    (milliseconds * 1000).rounded() / 1000
   }
 
   /// Writes the recording if anything was added since the last write. Safe to call often.
   func flush(now: Date = Date()) {
     let pending: (Recording, URL)? = state.withLock { state in
-      guard state.isRecording, state.isDirty, let url = state.fileURL else { return nil }
+      guard state.isRecording, state.isDirty, let url = state.fileURL,
+        let environment = state.environment
+      else { return nil }
       state.isDirty = false
+      var unfinished: [String: Int] = [:]
+      for (name, begun) in state.begun {
+        let open = begun - (state.ended[name] ?? 0)
+        if open > 0 { unfinished[name] = open }
+      }
       let recording = Recording(
         startedAt: state.startedAt,
         endedAt: now,
-        device: Environment.device,
-        app: Environment.app,
+        secondsSinceLaunch: environment.secondsSinceLaunch,
+        device: environment.device,
+        app: environment.app,
+        conditionsAtStart: state.conditionsAtStart,
+        conditionsAtEnd: environment.conditions(),
         metadata: state.metadata,
         frames: state.frames,
-        samples: state.samples
+        series: state.seriesOrder.map {
+          Recording.Series(name: $0.name, tag: $0.tag, values: state.series[$0] ?? [])
+        },
+        unfinishedIntervals: unfinished
       )
       return (recording, url)
     }
@@ -97,45 +169,13 @@ final class Recorder: Sendable {
     }
   }
 
+  /// One file per start, named after the moment it started, so that a recording is never
+  /// overwritten by a later one.
   static func fileName(for date: Date) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = TimeZone(identifier: "UTC")
-    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
     return "\(formatter.string(from: date)).json"
-  }
-}
-
-enum Environment {
-  static var device: Recording.Device {
-    var systemInfo = utsname()
-    uname(&systemInfo)
-    let model = withUnsafeBytes(of: &systemInfo.machine) { buffer in
-      String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
-    }
-    let version = ProcessInfo.processInfo.operatingSystemVersion
-    #if os(iOS)
-      let systemName = "iOS"
-    #elseif os(tvOS)
-      let systemName = "tvOS"
-    #else
-      let systemName = "macOS"
-    #endif
-    // The simulator reports the host's hardware; the simulated model is in the environment.
-    let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]
-    return Recording.Device(
-      model: simulated.map { "\($0) (Simulator)" } ?? model,
-      systemName: systemName,
-      systemVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
-    )
-  }
-
-  static var app: Recording.App {
-    let info = Bundle.main.infoDictionary ?? [:]
-    return Recording.App(
-      bundleIdentifier: Bundle.main.bundleIdentifier ?? "",
-      version: info["CFBundleShortVersionString"] as? String ?? "",
-      build: info["CFBundleVersion"] as? String ?? ""
-    )
   }
 }
