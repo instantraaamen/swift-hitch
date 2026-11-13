@@ -13,6 +13,19 @@ The usual way to measure scrolling is a UI test with `XCTOSSignpostMetric` or th
 
 It complements Instruments. Reach for it when you want a number you can compare across builds, when a problem only shows with real data on a real device, or when Instruments cannot attach to the device at hand.
 
+What comes out is a table that says what changed, and whether the change is larger than the noise:
+
+```
+median of 3 run(s) before, 3 run(s) after
+metric                            before  after  change  noise    verdict
+hitchTimeRatio                      28.7    3.5   -25.1    1.7   improved
+image.load[hit].p95                 13.4    6.7    -6.7    0.3   improved
+image.load[miss].p95                85.2   83.3    -1.9    5.7  unchanged
+open.detail.touchUpToHandler.p95     363   11.3  -352.0    1.1   improved
+```
+
+To try the whole flow before touching your own app, run the [example app](Examples/HitchExample).
+
 ## Installation
 
 ```swift

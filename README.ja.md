@@ -13,6 +13,19 @@
 
 Instruments の代わりではなく、補うものです。ビルドどうしで比べられる数字がほしいとき、実データの入った実機でしか出ない問題を追うとき、Instruments が端末につながらないときに使えます。
 
+得られるのは、何が変わったか、その差がぶれより大きいかを示す表です。
+
+```
+median of 3 run(s) before, 3 run(s) after
+metric                            before  after  change  noise    verdict
+hitchTimeRatio                      28.7    3.5   -25.1    1.7   improved
+image.load[hit].p95                 13.4    6.7    -6.7    0.3   improved
+image.load[miss].p95                85.2   83.3    -1.9    5.7  unchanged
+open.detail.touchUpToHandler.p95     363   11.3  -352.0    1.1   improved
+```
+
+自分のアプリに入れる前に一通り試すには、[サンプルアプリ](Examples/HitchExample)を動かしてください。
+
 ## 使い方
 
 起動時に記録を始めます。`--hitch-record` 付きで起動したときだけ動きます。
