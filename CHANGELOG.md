@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-13
+
 ### Added
 
 - `Hitch`, an in-app recorder of display link intervals and named durations.
@@ -18,3 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hitch report` and `hitch compare`, with medians across runs, a noise threshold, goals, and a check that the recordings are comparable.
 - Detection of durations that fall into two groups.
 - Separate products for the recorder (`Hitch`), the file format (`HitchRecording`) and the analysis (`HitchAnalysis`).
+
+[Unreleased]: https://github.com/instantraaamen/swift-hitch/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/instantraaamen/swift-hitch/releases/tag/0.1.0
