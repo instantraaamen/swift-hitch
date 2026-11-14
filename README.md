@@ -13,6 +13,20 @@ The usual way to measure scrolling is a UI test with `XCTOSSignpostMetric` or th
 
 It complements Instruments. Reach for it when you want a number you can compare across builds, when a problem only shows with real data on a real device, or when Instruments cannot attach to the device at hand.
 
+What comes out is a table that says what changed, and whether the change is larger than the noise. This one is the [example app](Examples/HitchExample) on an iPhone 18 Pro with 0.1.0, scrolled by hand, drawing its pictures on the main thread before and in the background after:
+
+```
+median of 3 run(s) before, 3 run(s) after
+metric                              before  after  change  noise    verdict
+frame.max                              167   82.0   -84.6   18.2   improved
+hitchTimeRatio                         130   30.0   -99.9   64.5   improved
+open.detail.longestFrameAfter.p95      167   52.2    -114   18.2   improved
+open.detail.touchUpToHandler.p95      31.3   28.7    -2.6    3.1  unchanged
+thumbnail.load[miss].p95               5.2    435    +430    1.7  regressed
+```
+
+The last row is not a mistake. Each picture takes longer to arrive once several are drawn at a time, and the scroll is smoother all the same. The example's README goes through the figures, and how to get your own before touching your app.
+
 ## Installation
 
 ```swift

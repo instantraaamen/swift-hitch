@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An example app, `Examples/HitchExample`, to try `hitch record` and `hitch compare` with.
+
 ### Changed
 
 - The recorder's display link follows the display up to its highest refresh rate. It used to be called at 60 to 80 Hz on a 120 Hz iPhone while the display refreshed faster under a scroll, so shorter delays went unseen. The recorder is called more often while the display runs faster, up to twice as often. Figures recorded on such a device are not comparable with those of 0.1.0.
