@@ -180,6 +180,8 @@ The figures are measured where the app can see them, with a `CADisplayLink` on t
 
 On an iPhone with a 120 Hz display, the display changes its refresh rate as it goes: in our runs it stayed at 60 Hz on a still screen and moved between 60, 80 and 120 Hz under a scroll. The recorder's display link follows it without asking for a rate of its own, and each frame is judged against the interval the display expected at that moment. The report shows the most common one as `expected`, and a comparison warns when two recordings ran at different intervals. Rates above 60 Hz are only available to an app whose Info.plist sets `CADisableMinimumFrameDurationOnPhone`.
 
+That key does not by itself make a display link run at 120 Hz. In the same runs a second display link, left at its default frame rate range, was called at 60 Hz on a still screen and at 60 to 80 Hz under a scroll, while the recorder's link beside it was called at 120 Hz for a quarter to a third of the frames. If your own code drives an animation or measures time from a display link, give the link a `preferredFrameRateRange` that reaches the display's highest rate, or it will not be told about the faster frames. This was measured on one device, an iPhone 18 Pro with iOS 27.2, with one run of each.
+
 A debug build is not optimized, and its durations are longer than what users see. The recording says which kind of build it came from, and the report points it out.
 
 ## Products

@@ -71,6 +71,10 @@ swift run hitch compare --before hitch-recordings/before-*.json --after hitch-re
 
 メインスレッドの `CADisplayLink` で見ているので、ここでのヒッチは「画面がコマを求めたときにメインスレッドが忙しかった」ことを表します。Instruments や MetricKit は画面側で測るので、同じ操作でも値が違うことがあります。ビルドどうしを比べるための数字として使ってください。
 
+120 Hz の iPhone では、画面は速さを変えながら動きます。実測では、止まった画面は 60 Hz、スクロール中は 60・80・120 Hz を行き来しました。記録用の `CADisplayLink` は速さを要求せずに画面に付いていき、コマごとに、そのとき画面が期待していた間隔と比べてヒッチを判定します。60 Hz を超える速さは、Info.plist に `CADisableMinimumFrameDurationOnPhone` を入れたアプリでしか使えません。
+
+ただし、このキーを入れただけでは `CADisplayLink` は 120 Hz になりません。同じ記録の中で、範囲を指定しないままの `CADisplayLink` は、止まった画面で 60 Hz、スクロール中で 60〜80 Hz でした。その横で、記録用のリンクにはコマの 4 分の 1 から 3 分の 1 が 120 Hz で届いています。自分のコードで `CADisplayLink` からアニメーションを動かしたり時間を測ったりしているなら、`preferredFrameRateRange` で上限を画面の最大値まで広げてください。そうしないと速いコマは届きません。これは iPhone 18 Pro(iOS 27.2)1 台で、各 1 回測った結果です。
+
 詳しくは [README.md](README.md) を見てください。
 
 ## ライセンス
