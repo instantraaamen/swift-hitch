@@ -85,8 +85,10 @@
     ///
     /// Left alone, a display link on a 120 Hz iPhone is called at 60 to 80 Hz while the display
     /// refreshes faster under a scroll, and frames that are late by less than that are not
-    /// seen. The range has no preferred rate, so it asks the system for nothing: on a screen
-    /// that is not moving the link still runs at the rate it would have had.
+    /// seen. The range has no preferred rate, so it does not ask the system for a faster
+    /// display: on a screen that is not moving the link still runs at the rate it would have
+    /// had. While the display does run faster the link is called more often, up to twice as
+    /// often as before, and each call takes the recorder's lock once.
     private func followDisplay() {
       // Not known before a scene is connected. The link keeps the default until then.
       guard let fastest = DeviceState.maximumFramesPerSecond(), fastest > 0 else { return }
