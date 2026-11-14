@@ -34,7 +34,13 @@
     private var lastTimestamp: CFTimeInterval = 0
     private var observers: [NSObjectProtocol] = []
     private var pending: Interaction?
-    private var framesUntilRefresh = 30
+    private var framesUntilRefresh = refreshInterval
+    private var refreshesLeft = refreshLimit
+
+    /// How many frames pass before the device's state is read again after a start.
+    private static let refreshInterval = 30
+    /// How many times it is read again while the display's rate is still unknown.
+    private static let refreshLimit = 20
 
     /// A touch older than this is not the one being handled. It guards against an interaction
     /// that is marked from somewhere other than a touch handler.
@@ -45,7 +51,8 @@
       let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
       link.add(to: .main, forMode: .common)
       self.link = link
-      followDisplay()
+      framesUntilRefresh = Self.refreshInterval
+      refreshesLeft = Self.refreshLimit
 
       let center = NotificationCenter.default
       observers = [
@@ -89,12 +96,16 @@
     /// display: on a screen that is not moving the link still runs at the rate it would have
     /// had. While the display does run faster the link is called more often, up to twice as
     /// often as before, and each call takes the recorder's lock once.
-    private func followDisplay() {
+    ///
+    /// - Returns: Whether the display's highest rate was known, so that the range could be set.
+    @discardableResult
+    private func followDisplay() -> Bool {
       // Not known before a scene is connected. The link keeps the default until then.
-      guard let fastest = DeviceState.maximumFramesPerSecond(), fastest > 0 else { return }
+      guard let fastest = DeviceState.maximumFramesPerSecond(), fastest > 0 else { return false }
       let range = CAFrameRateRange(
         minimum: min(Self.slowestFrameRate, Float(fastest)), maximum: Float(fastest), preferred: 0)
       if link?.preferredFrameRateRange != range { link?.preferredFrameRateRange = range }
+      return true
     }
 
     /// The low end of the range. It only has to be below any rate a display runs at.
@@ -121,7 +132,10 @@
       framesUntilRefresh -= 1
       if framesUntilRefresh == 0 {
         DeviceState.refresh()
-        followDisplay()
+        // The display's rate is not known until a scene is connected. Look again for a while,
+        // so that a scene that connects late does not leave the link at its default range.
+        refreshesLeft -= 1
+        if !followDisplay(), refreshesLeft > 0 { framesUntilRefresh = Self.refreshInterval }
       }
       trackInteraction(interval: interval, timestamp: link.timestamp)
     }
