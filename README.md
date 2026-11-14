@@ -13,7 +13,7 @@ The usual way to measure scrolling is a UI test with `XCTOSSignpostMetric` or th
 
 It complements Instruments. Reach for it when you want a number you can compare across builds, when a problem only shows with real data on a real device, or when Instruments cannot attach to the device at hand.
 
-What comes out is a table that says what changed, and whether the change is larger than the noise. This one is the [example app](Examples/HitchExample) on an iPhone 18 Pro, scrolled by hand, drawing its pictures on the main thread before and in the background after:
+What comes out is a table that says what changed, and whether the change is larger than the noise. This one is the [example app](Examples/HitchExample) on an iPhone 18 Pro with 0.1.0, scrolled by hand, drawing its pictures on the main thread before and in the background after:
 
 ```
 median of 3 run(s) before, 3 run(s) after
@@ -178,7 +178,9 @@ The terms are Apple's. A hitch is a frame that arrives later than the display ex
 
 The figures are measured where the app can see them, with a `CADisplayLink` on the main run loop. A hitch here means the main thread was busy when the display asked for a frame, and a frame counts when it is more than half an interval late. A frame that the main thread delivered on time and the render server presented late is not seen. Instruments and MetricKit measure at the display, so their hitch time ratio for the same session can differ. Use these figures to compare one build with another, not with a figure from another tool.
 
-On an iPhone with a 120 Hz display, a display link is delivered at 60 Hz unless the app's Info.plist sets `CADisableMinimumFrameDurationOnPhone`. The recording stores the interval the display link actually ran at, the report shows it as `expected`, and a comparison warns when two recordings ran at different intervals.
+On an iPhone with a 120 Hz display, the display changes its refresh rate as it goes: in our runs it stayed at 60 Hz on a still screen and moved between 60, 80 and 120 Hz under a scroll. The recorder's display link follows it without asking for a rate of its own, and each frame is judged against the interval the display expected at that moment. The report shows the most common one as `expected`, and a comparison warns when two recordings ran at different intervals. Rates above 60 Hz are only available to an app whose Info.plist sets `CADisableMinimumFrameDurationOnPhone`.
+
+That key does not by itself make a display link run at 120 Hz. In the same runs a second display link, left at its default frame rate range, was called at 60 Hz on a still screen and at 60 to 80 Hz under a scroll, while the recorder's link beside it was called at 120 Hz for a quarter to a third of the frames. If your own code drives an animation or measures time from a display link, give the link a `preferredFrameRateRange` that reaches the display's highest rate, or it will not be told about the faster frames. This was measured on one device, an iPhone 18 Pro with iOS 27.2, with one run of each.
 
 A debug build is not optimized, and its durations are longer than what users see. The recording says which kind of build it came from, and the report points it out.
 
