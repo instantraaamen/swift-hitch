@@ -45,6 +45,7 @@
       let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
       link.add(to: .main, forMode: .common)
       self.link = link
+      followDisplay()
 
       let center = NotificationCenter.default
       observers = [
@@ -59,6 +60,7 @@
             self?.pending = nil
             self?.installTouchRecorder()
             DeviceState.refresh()
+            self?.followDisplay()
           }
         },
         center.addObserver(
@@ -76,7 +78,25 @@
       ]
       installTouchRecorder()
       DeviceState.refresh()
+      followDisplay()
     }
+
+    /// Lets the display link run as fast as the display does.
+    ///
+    /// Left alone, a display link on a 120 Hz iPhone is called at 60 to 80 Hz while the display
+    /// refreshes faster under a scroll, and frames that are late by less than that are not
+    /// seen. The range has no preferred rate, so it asks the system for nothing: on a screen
+    /// that is not moving the link still runs at the rate it would have had.
+    private func followDisplay() {
+      // Not known before a scene is connected. The link keeps the default until then.
+      guard let fastest = DeviceState.maximumFramesPerSecond(), fastest > 0 else { return }
+      let range = CAFrameRateRange(
+        minimum: min(Self.slowestFrameRate, Float(fastest)), maximum: Float(fastest), preferred: 0)
+      if link?.preferredFrameRateRange != range { link?.preferredFrameRateRange = range }
+    }
+
+    /// The low end of the range. It only has to be below any rate a display runs at.
+    private static let slowestFrameRate: Float = 8
 
     func stop() {
       link?.invalidate()
@@ -97,7 +117,10 @@
       // A recording that starts at launch begins before a scene is connected and before the
       // battery state is known. Both are there once frames are being delivered.
       framesUntilRefresh -= 1
-      if framesUntilRefresh == 0 { DeviceState.refresh() }
+      if framesUntilRefresh == 0 {
+        DeviceState.refresh()
+        followDisplay()
+      }
       trackInteraction(interval: interval, timestamp: link.timestamp)
     }
 

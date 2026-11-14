@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The recorder's display link follows the display up to its highest refresh rate. It used to be called at 60 to 80 Hz on a 120 Hz iPhone while the display refreshed faster under a scroll, so shorter delays went unseen. Figures recorded on such a device are not comparable with those of 0.1.0.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added
