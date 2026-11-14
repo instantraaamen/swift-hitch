@@ -53,6 +53,7 @@ thumbnail.load[miss].p95               5.2    435    +430    1.7  regressed
 The runs were made by hand and were not alike. One loaded 584 pictures and another 2292, which is why the noise of `hitchTimeRatio` is as large as 64.5. Your figures will differ; the direction should not. The display link ran at 60 Hz for about two thirds of the frames and at 80 Hz for the rest, mostly while the list was scrolling. It did not run at 120 Hz.
 
 
+## Where the calls are
 
 - `HitchExampleApp.swift` starts the recorder.
 - `Pictures.swift` wraps the loading of a picture in a `HitchSignposter` interval, tagged `hit`, `miss`, or `joined` when it waited for a picture already being drawn.
