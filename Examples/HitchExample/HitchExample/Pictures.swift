@@ -22,6 +22,8 @@ final class PictureStore {
   private let signposter = HitchSignposter(
     subsystem: "com.example.HitchExample", category: "Pictures")
   private let cache = NSCache<NSString, UIImage>()
+  /// Pictures that are being drawn in the background, so that none is drawn twice.
+  private var drawing: [NSString: Task<UIImage, Never>] = [:]
 
   private init() {
     // Small, so that scrolling back up misses again and both tags keep getting figures.
@@ -30,8 +32,8 @@ final class PictureStore {
 
   /// Returns the picture of an item, drawing it when it is not cached.
   ///
-  /// The length of every call is recorded under `name`, apart for hits and misses: the two
-  /// share a name and nothing else.
+  /// The length of every call is recorded under `name`, apart for hits, misses and calls that
+  /// joined a picture already being drawn: they share a name and nothing else.
   func picture(_ name: StaticString, for index: Int, side: CGFloat) async -> UIImage {
     // An identifier of its own, because loads of several rows overlap.
     let state = signposter.beginInterval(name, id: signposter.signposter.makeSignpostID())
@@ -41,15 +43,24 @@ final class PictureStore {
       return cached
     }
     let image: UIImage
+    var tag = "miss"
     if Catalog.drawsOnMainThread {
       image = Self.draw(index: index, side: side)
+    } else if let task = drawing[key] {
+      // Another request is already drawing this picture. Waiting for it is neither a hit nor
+      // a miss, so it gets a tag of its own.
+      image = await task.value
+      tag = "joined"
     } else {
-      image = await Task.detached(priority: .userInitiated) {
+      let task = Task.detached(priority: .userInitiated) {
         Self.draw(index: index, side: side)
-      }.value
+      }
+      drawing[key] = task
+      image = await task.value
+      drawing[key] = nil
     }
     cache.setObject(image, forKey: key)
-    signposter.endInterval(name, state, tag: "miss")
+    signposter.endInterval(name, state, tag: tag)
     return image
   }
 
