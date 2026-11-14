@@ -13,6 +13,20 @@
 
 Instruments の代わりではなく、補うものです。ビルドどうしで比べられる数字がほしいとき、実データの入った実機でしか出ない問題を追うとき、Instruments が端末につながらないときに使えます。
 
+得られるのは、何が変わったか、その差がぶれより大きいかを示す表です。次の表は、[サンプルアプリ](Examples/HitchExample)を iPhone 18 Pro で手でスクロールして測ったものです。変更前は絵をメインスレッドで描き、変更後はバックグラウンドで描いています。
+
+```
+median of 3 run(s) before, 3 run(s) after
+metric                              before  after  change  noise    verdict
+frame.max                              167   82.0   -84.6   18.2   improved
+hitchTimeRatio                         130   30.0   -99.9   64.5   improved
+open.detail.longestFrameAfter.p95      167   52.2    -114   18.2   improved
+open.detail.touchUpToHandler.p95      31.3   28.7    -2.6    3.1  unchanged
+thumbnail.load[miss].p95               5.2    435    +430    1.7  regressed
+```
+
+最後の行は間違いではありません。何枚も同時に描くようになると 1 枚あたりの時間は延びますが、スクロールは滑らかになります。数字の読み方と、自分のアプリに入れる前に試す手順は、サンプルの README にあります。
+
 ## 使い方
 
 起動時に記録を始めます。`--hitch-record` 付きで起動したときだけ動きます。

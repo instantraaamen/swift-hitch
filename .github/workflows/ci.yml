@@ -29,3 +29,9 @@ jobs:
           xcodebuild build -scheme Hitch \
             -destination 'generic/platform=iOS Simulator' \
             -skipPackagePluginValidation
+      - name: Build the example
+        run: |
+          xcodebuild build -project Examples/HitchExample/HitchExample.xcodeproj \
+            -scheme HitchExample \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO
