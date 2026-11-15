@@ -34,7 +34,13 @@
     private var lastTimestamp: CFTimeInterval = 0
     private var observers: [NSObjectProtocol] = []
     private var pending: Interaction?
-    private var framesUntilRefresh = 30
+    private var framesUntilRefresh = refreshInterval
+    private var refreshesLeft = refreshLimit
+
+    /// How many frames pass before the device's state is read again after a start.
+    private static let refreshInterval = 30
+    /// How many times it is read again while the display's rate is still unknown.
+    private static let refreshLimit = 20
 
     /// A touch older than this is not the one being handled. It guards against an interaction
     /// that is marked from somewhere other than a touch handler.
@@ -45,6 +51,8 @@
       let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
       link.add(to: .main, forMode: .common)
       self.link = link
+      framesUntilRefresh = Self.refreshInterval
+      refreshesLeft = Self.refreshLimit
 
       let center = NotificationCenter.default
       observers = [
@@ -59,6 +67,7 @@
             self?.pending = nil
             self?.installTouchRecorder()
             DeviceState.refresh()
+            self?.followDisplay()
           }
         },
         center.addObserver(
@@ -76,7 +85,31 @@
       ]
       installTouchRecorder()
       DeviceState.refresh()
+      followDisplay()
     }
+
+    /// Lets the display link run as fast as the display does.
+    ///
+    /// Left alone, a display link on a 120 Hz iPhone is called at 60 to 80 Hz while the display
+    /// refreshes faster under a scroll, and frames that are late by less than that are not
+    /// seen. The range has no preferred rate, so it does not ask the system for a faster
+    /// display: on a screen that is not moving the link still runs at the rate it would have
+    /// had. While the display does run faster the link is called more often, up to twice as
+    /// often as before, and each call takes the recorder's lock once.
+    ///
+    /// - Returns: Whether the display's highest rate was known, so that the range could be set.
+    @discardableResult
+    private func followDisplay() -> Bool {
+      // Not known before a scene is connected. The link keeps the default until then.
+      guard let fastest = DeviceState.maximumFramesPerSecond(), fastest > 0 else { return false }
+      let range = CAFrameRateRange(
+        minimum: min(Self.slowestFrameRate, Float(fastest)), maximum: Float(fastest), preferred: 0)
+      if link?.preferredFrameRateRange != range { link?.preferredFrameRateRange = range }
+      return true
+    }
+
+    /// The low end of the range. It only has to be below any rate a display runs at.
+    private static let slowestFrameRate: Float = 8
 
     func stop() {
       link?.invalidate()
@@ -97,7 +130,13 @@
       // A recording that starts at launch begins before a scene is connected and before the
       // battery state is known. Both are there once frames are being delivered.
       framesUntilRefresh -= 1
-      if framesUntilRefresh == 0 { DeviceState.refresh() }
+      if framesUntilRefresh == 0 {
+        DeviceState.refresh()
+        // The display's rate is not known until a scene is connected. Look again for a while,
+        // so that a scene that connects late does not leave the link at its default range.
+        refreshesLeft -= 1
+        if !followDisplay(), refreshesLeft > 0 { framesUntilRefresh = Self.refreshInterval }
+      }
       trackInteraction(interval: interval, timestamp: link.timestamp)
     }
 

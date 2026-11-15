@@ -20,7 +20,7 @@ targets:
       path: HitchExample/Info.plist
       properties:
         CFBundleDisplayName: Hitch Example
-        # Without this an iPhone delivers a display link at 60 Hz on a 120 Hz display.
+        # Without this an app on an iPhone is not given refresh rates above 60 Hz.
         CADisableMinimumFrameDurationOnPhone: true
         UILaunchScreen: {}
     settings:
